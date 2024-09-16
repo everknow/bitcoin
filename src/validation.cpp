@@ -4267,9 +4267,10 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     return true;
 }
 
-bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& block, bool force_processing, bool min_pow_checked, bool* new_block)
+bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& in_block, bool force_processing, bool min_pow_checked, bool* new_block)
 {
     AssertLockNotHeld(cs_main);
+    std::shared_ptr<CBlock> block = std::make_shared<CBlock>(*in_block);
 
     {
         CBlockIndex *pindex = nullptr;
@@ -4280,11 +4281,56 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         // Therefore, the following critical section must include the CheckBlock() call as well.
         LOCK(cs_main);
 
-        // Skipping AcceptBlock() for CheckBlock() failures means that we will never mark a block as invalid if
-        // CheckBlock() fails.  This is protective against consensus failure if there are any unknown forms of block
-        // malleability that cause CheckBlock() to fail; see e.g. CVE-2012-2459 and
-        // https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-February/016697.html.  Because CheckBlock() is
-        // not very expensive, the anti-DoS benefits of caching failure (of a definitely-invalid block) are not substantial.
+        // START EDIT HERE
+        if (!block->vtx.empty()) {
+            const CTransactionRef& coinbaseTx = block->vtx[0]; // Immutable transaction
+
+            LogPrintf("Coinbase Transaction: \n");
+            LogPrintf("  Coinbase Tx Hash: %s\n", coinbaseTx->GetHash().ToString());
+            LogPrintf("  Coinbase Tx Size: %u bytes\n", coinbaseTx->GetTotalSize());
+            LogPrintf("  Number of Outputs: %d\n", coinbaseTx->vout.size());
+
+            if (!coinbaseTx->vin.empty()) {
+                // Convert to mutable transaction for modification
+                CMutableTransaction mutableTx(*coinbaseTx);
+
+                // Extract scriptSig
+                const CTxIn& coinbaseInput = mutableTx.vin[0];
+                std::string coinbaseData = HexStr(std::vector<unsigned char>(coinbaseInput.scriptSig.begin(), coinbaseInput.scriptSig.end()));
+
+                LogPrintf("Coinbase scriptSig in Hex: %s\n", coinbaseData);
+
+                // Define the trim length
+                size_t trim_length = 280; // 140*2 TODO: multiply this for how many sig we have
+
+                if (coinbaseData.length() > trim_length) {
+                    // Trim the scriptSig
+                    std::string trimmed_part = coinbaseData.substr(0, trim_length);
+                    std::string remaining_part = coinbaseData.substr(trim_length);
+
+                    LogPrintf("  Trimmed Coinbase Data (first %zu hex chars): %s\n", trim_length, trimmed_part);
+                    LogPrintf("  Remaining part of scriptSig (Hex): %s\n", remaining_part);
+
+                    std::vector<unsigned char> newScriptSig = ParseHex(remaining_part);
+                    LogPrintf(" NEW scriptSig: %s\n", HexStr(newScriptSig));
+
+                    // Update the scriptSig in the mutable transaction
+                    mutableTx.vin[0].scriptSig = CScript(newScriptSig.begin(), newScriptSig.end());
+
+                    // Replace the coinbase transaction in the block
+                    block->vtx[0] = MakeTransactionRef(std::move(mutableTx));
+                    std::const_pointer_cast<const CBlock>(block);
+                } else {
+                    LogPrintf("ScriptSig is shorter than the expected length\n");
+                }
+            } else {
+                LogPrintf("Coinbase tx has no inputs\n");
+            }
+        } else {
+            LogPrintf("Block has no transactions\n");
+        }
+        // END EDIT HERE
+
         bool ret = CheckBlock(*block, state, GetConsensus());
         if (ret) {
             // Store to disk
