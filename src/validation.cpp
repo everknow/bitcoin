@@ -3760,6 +3760,7 @@ bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensu
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-signet-blksig", "signet block signature validation failure");
     }
 
+    // checkbalba()
     // Check the merkle root.
     if (fCheckMerkleRoot && !CheckMerkleRoot(block, state)) {
         return false;
@@ -4266,7 +4267,6 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
 
     return true;
 }
-
 bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& in_block, bool force_processing, bool min_pow_checked, bool* new_block)
 {
     AssertLockNotHeld(cs_main);
@@ -4281,57 +4281,11 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& in_
         // Therefore, the following critical section must include the CheckBlock() call as well.
         LOCK(cs_main);
 
-        // START EDIT HERE
-        if (!block->vtx.empty()) {
-            const CTransactionRef& coinbaseTx = block->vtx[0]; // Immutable transaction
+        // Modify the block by processing the coinbase transaction and trimming the signature if necessary
+        CheckSigInCoinbaseTransaction(block);
 
-            LogPrintf("Coinbase Transaction: \n");
-            LogPrintf("  Coinbase Tx Hash: %s\n", coinbaseTx->GetHash().ToString());
-            LogPrintf("  Coinbase Tx Size: %u bytes\n", coinbaseTx->GetTotalSize());
-            LogPrintf("  Number of Outputs: %d\n", coinbaseTx->vout.size());
-
-            if (!coinbaseTx->vin.empty()) {
-                // Convert to mutable transaction for modification
-                CMutableTransaction mutableTx(*coinbaseTx);
-
-                // Extract scriptSig
-                const CTxIn& coinbaseInput = mutableTx.vin[0];
-                std::string coinbaseData = HexStr(std::vector<unsigned char>(coinbaseInput.scriptSig.begin(), coinbaseInput.scriptSig.end()));
-
-                LogPrintf("Coinbase scriptSig in Hex: %s\n", coinbaseData);
-
-                // Define the trim length
-                size_t trim_length = 280; // 140*2 TODO: multiply this for how many sig we have
-
-                if (coinbaseData.length() > trim_length) {
-                    // Trim the scriptSig
-                    std::string trimmed_part = coinbaseData.substr(0, trim_length);
-                    std::string remaining_part = coinbaseData.substr(trim_length);
-
-                    LogPrintf("  Trimmed Coinbase Data (first %zu hex chars): %s\n", trim_length, trimmed_part);
-                    LogPrintf("  Remaining part of scriptSig (Hex): %s\n", remaining_part);
-
-                    std::vector<unsigned char> newScriptSig = ParseHex(remaining_part);
-                    LogPrintf(" NEW scriptSig: %s\n", HexStr(newScriptSig));
-
-                    // Update the scriptSig in the mutable transaction
-                    mutableTx.vin[0].scriptSig = CScript(newScriptSig.begin(), newScriptSig.end());
-
-                    // Replace the coinbase transaction in the block
-                    block->vtx[0] = MakeTransactionRef(std::move(mutableTx));
-                    std::const_pointer_cast<const CBlock>(block);
-                } else {
-                    LogPrintf("ScriptSig is shorter than the expected length\n");
-                }
-            } else {
-                LogPrintf("Coinbase tx has no inputs\n");
-            }
-        } else {
-            LogPrintf("Block has no transactions\n");
-        }
-        // END EDIT HERE
-
-        bool ret = CheckBlock(*block, state, GetConsensus());
+        // Validate the block (without the modified signature or merkleroot failure)
+        bool ret = CheckBlock(*block, state, GetConsensus()); // Hack on block; we need to check the block without signature or merkleroot failure
         if (ret) {
             // Store to disk
             ret = AcceptBlock(block, state, &pindex, force_processing, nullptr, new_block, min_pow_checked);
@@ -4345,18 +4299,70 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& in_
     NotifyHeaderTip(*this);
 
     BlockValidationState state; // Only used to report errors, not invalidity - ignore it
-    if (!ActiveChainstate().ActivateBestChain(state, block)) {
+    if (!ActiveChainstate().ActivateBestChain(state, block)) { // HERE INITIALIZES THE P2P PROCESS
         return error("%s: ActivateBestChain failed (%s)", __func__, state.ToString());
     }
 
     Chainstate* bg_chain{WITH_LOCK(cs_main, return BackgroundSyncInProgress() ? m_ibd_chainstate.get() : nullptr)};
     BlockValidationState bg_state;
-    if (bg_chain && !bg_chain->ActivateBestChain(bg_state, block)) {
+    if (bg_chain && !bg_chain->ActivateBestChain(bg_state, in_block)) {
         return error("%s: [background] ActivateBestChain failed (%s)", __func__, bg_state.ToString());
-     }
+    }
 
     return true;
 }
+
+void ChainstateManager::CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
+    if (!block->vtx.empty()) {
+        const CTransactionRef& coinbaseTx = block->vtx[0]; // Immutable transaction
+
+        LogPrintf("Coinbase Transaction: \n");
+        LogPrintf("  Coinbase Tx Hash: %s\n", coinbaseTx->GetHash().ToString());
+        LogPrintf("  Coinbase Tx Size: %u bytes\n", coinbaseTx->GetTotalSize());
+        LogPrintf("  Number of Outputs: %d\n", coinbaseTx->vout.size());
+
+        if (!coinbaseTx->vin.empty()) {
+            // Convert to mutable transaction for modification
+            CMutableTransaction mutableTx(*coinbaseTx);
+
+            // Extract scriptSig
+            const CTxIn& coinbaseInput = mutableTx.vin[0];
+            std::string coinbaseData = HexStr(std::vector<unsigned char>(coinbaseInput.scriptSig.begin(), coinbaseInput.scriptSig.end()));
+
+            LogPrintf("Coinbase scriptSig in Hex: %s\n", coinbaseData);
+
+            // Define the trim length
+            size_t trim_length = 280; // 140*2 TODO: multiply this for how many sig we have
+
+            if (coinbaseData.length() > trim_length) {
+                // Trim the scriptSig
+                std::string trimmed_part = coinbaseData.substr(0, trim_length);
+                std::string remaining_part = coinbaseData.substr(trim_length);
+
+                LogPrintf("  Trimmed Coinbase Data (first %zu hex chars): %s\n", trim_length, trimmed_part);
+                LogPrintf("  Remaining part of scriptSig (Hex): %s\n", remaining_part);
+
+                std::vector<unsigned char> newScriptSig = ParseHex(remaining_part);
+                LogPrintf(" NEW scriptSig: %s\n", HexStr(newScriptSig));
+
+                // Update the scriptSig in the mutable transaction
+                mutableTx.vin[0].scriptSig = CScript(newScriptSig.begin(), newScriptSig.end());
+
+                // Replace the coinbase transaction in the block
+                block->vtx[0] = MakeTransactionRef(std::move(mutableTx));
+                std::const_pointer_cast<const CBlock>(block); // Update the block pointer
+            } else {
+                LogPrintf("ScriptSig is not containing external signatures\n");
+            }
+        } else {
+            LogPrintf("Coinbase tx has no inputs\n");
+        }
+    } else {
+        LogPrintf("Block has no transactions\n");
+    }
+}
+// END EDIT HERE
+
 
 MempoolAcceptResult ChainstateManager::ProcessTransaction(const CTransactionRef& tx, bool test_accept)
 {

@@ -1159,6 +1159,7 @@ public:
      * @returns     If the block was processed, independently of block validity
      */
     bool ProcessNewBlock(const std::shared_ptr<const CBlock>& block, bool force_processing, bool min_pow_checked, bool* new_block) LOCKS_EXCLUDED(cs_main);
+    void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block);
 
     /**
      * Process incoming block headers.
