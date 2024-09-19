@@ -4279,7 +4279,6 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
 
     const CChainParams& params{GetParams()};
     std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
-    // clear the blockcopy to pass the check
     CheckSigInCoinbaseTransaction(in_block);
 
     if (!CheckBlock(block, state, params.GetConsensus()) ||
@@ -4324,6 +4323,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
 bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& block, bool force_processing, bool min_pow_checked, bool* new_block)
 {
     AssertLockNotHeld(cs_main);
+
     {
         CBlockIndex *pindex = nullptr;
         if (new_block) *new_block = false;
@@ -4333,14 +4333,21 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         // Therefore, the following critical section must include the CheckBlock() call as well.
         LOCK(cs_main);
 
+        // clear the blockcopy to pass the check
+        // Skipping AcceptBlock() for CheckBlock() failures means that we will never mark a block as invalid if
+        // CheckBlock() fails.  This is protective against consensus failure if there are any unknown forms of block
+        // malleability that cause CheckBlock() to fail; see e.g. CVE-2012-2459 and
+        // https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-February/016697.html.  Because CheckBlock() is
+        // not very expensive, the anti-DoS benefits of caching failure (of a definitely-invalid block) are not substantial.
         bool ret = CheckBlock(*block, state, GetConsensus());
         if (ret) {
+            // Store to disk
             ret = AcceptBlock(block, state, &pindex, force_processing, nullptr, new_block, min_pow_checked);
         }
         if (!ret) {
             GetMainSignals().BlockChecked(*block, state);
             return error("%s: AcceptBlock FAILED (%s)", __func__, state.ToString());
-        }
+         }
     }
 
     NotifyHeaderTip(*this);
