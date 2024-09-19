@@ -3742,6 +3742,7 @@ static bool CheckWitnessMalleation(const CBlock& block, bool expect_witness_comm
 
     return true;
 }
+
 void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
     if (!block->vtx.empty()) {
         const CTransactionRef& coinbaseTx = block->vtx[0]; // Immutable transaction
@@ -3793,6 +3794,7 @@ void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
 
 bool CheckBlock(const CBlock& in_block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW, bool fCheckMerkleRoot)
 {
+    // These are checks that are independent of context.
    std::shared_ptr<CBlock> modifiableBlock = std::make_shared<CBlock>(in_block);
 
     // Call CheckSigInCoinbaseTransaction to modify the coinbase transaction if necessary
