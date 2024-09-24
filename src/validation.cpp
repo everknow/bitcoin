@@ -2263,9 +2263,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // the clock to go backward).
 
     std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
-    LogPrintf("FIRST CheckSigInCoinbaseTransaction Before");
     CheckSigInCoinbaseTransaction(in_block);
-    LogPrintf("FIRST CheckSigInCoinbaseTransaction Done");
     if (!CheckBlock(*in_block, state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
         if (state.GetResult() == BlockValidationResult::BLOCK_MUTATED) {
             // We don't write down blocks to disk if they may have been
@@ -3799,9 +3797,6 @@ static bool CheckWitnessMalleation(const CBlock& block, bool expect_witness_comm
 
 bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW, bool fCheckMerkleRoot)
 {
-
-    LogPrintf("TEEEEEEEEEEEEEEEEEEEEEEEEEEEEESSSSSSSSSSSSSSSSSSSSTTTTT");
-
     if (block.fChecked)
         return true;
 
@@ -4232,6 +4227,8 @@ void ChainstateManager::ReportHeadersPresync(const arith_uint256& work, int64_t 
 bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, BlockValidationState& state, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock, bool min_pow_checked)
 {
     const CBlock& block = *pblock;
+    std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
+    CheckSigInCoinbaseTransaction(in_block);
 
     if (fNewBlock) *fNewBlock = false;
     AssertLockHeld(cs_main);
@@ -4239,9 +4236,8 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     CBlockIndex *pindexDummy = nullptr;
     CBlockIndex *&pindex = ppindex ? *ppindex : pindexDummy;
 
-    bool accepted_header{AcceptBlockHeader(block, state, &pindex, min_pow_checked)};
+    bool accepted_header{AcceptBlockHeader(*in_block, state, &pindex, min_pow_checked)};
     CheckBlockIndex();
-
     if (!accepted_header)
         return false;
 
@@ -4280,11 +4276,6 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     }
 
     const CChainParams& params{GetParams()};
-    std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
-    LogPrintf("THIRD CheckSigInCoinbaseTransaction Before");
-    CheckSigInCoinbaseTransaction(in_block);
-    LogPrintf("THIRD CheckSigInCoinbaseTransaction Done");
-
     if (!CheckBlock(*in_block, state, params.GetConsensus()) ||
         !ContextualCheckBlock(*in_block, state, *this, pindex->pprev)) { // this is the hack we pass here the block without the signatures!
         if (state.IsInvalid() && state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
@@ -4349,10 +4340,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         std::shared_ptr<CBlock> mblock = std::make_shared<CBlock>(*block);
 
         // Call CheckSigInCoinbaseTransaction to modify the coinbase transaction if necessary
-        LogPrintf("SECOND CheckSigInCoinbaseTransaction Before");
         CheckSigInCoinbaseTransaction(mblock);
-        LogPrintf("SECOND CheckSigInCoinbaseTransaction Done");
-
         bool ret = CheckBlock(*mblock, state, GetConsensus());
         if (ret) {
             // Store to disk
@@ -4531,9 +4519,7 @@ VerifyDBResult CVerifyDB::VerifyDB(
         }
         // check level 1: verify block validity
         std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
-        LogPrintf("DB CheckSigInCoinbaseTransaction Before");
         CheckSigInCoinbaseTransaction(in_block);
-        LogPrintf("DB CheckSigInCoinbaseTransaction Done");
 
         if (nCheckLevel >= 1 && !CheckBlock(block, state, consensus_params)) {
             LogPrintf("Verification error: found bad block at %d, hash=%s (%s)\n",
