@@ -3797,6 +3797,8 @@ static bool CheckWitnessMalleation(const CBlock& block, bool expect_witness_comm
 
 bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW, bool fCheckMerkleRoot)
 {
+    // These are checks that are independent of context.
+
     if (block.fChecked)
         return true;
 
@@ -4238,6 +4240,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
 
     bool accepted_header{AcceptBlockHeader(*in_block, state, &pindex, min_pow_checked)};
     CheckBlockIndex();
+
     if (!accepted_header)
         return false;
 
