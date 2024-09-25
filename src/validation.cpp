@@ -2270,7 +2270,7 @@ bool VerifySignatures(const CBlock& block) {
 
   std::string hex_signatures = hex_script_with_sigs.substr(0,sigs_length);
 
-  std::string serialized_block_hex = HexStr(block);
+  std::string serialized_block_hex = HexStr(RemoveSignatures(block))
   
   insert from // Decode signatures
 
