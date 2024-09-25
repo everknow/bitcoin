@@ -9,6 +9,15 @@
 
 #include <validation.h>
 
+// start edit import here
+#include <key.h>              // For CPubKey
+#include <util/strencodings.h> // For HexStr, ParseHex
+#include <consensus/validation.h> // For CValidationState
+#include <secp256k1.h>
+#include <vector>
+#include <iostream>
+// end edit import here
+
 #include <arith_uint256.h>
 #include <chain.h>
 #include <checkqueue.h>
@@ -2183,6 +2192,64 @@ static SteadyClock::duration time_index{};
 static SteadyClock::duration time_total{};
 static int64_t num_blocks_total = 0;
 
+// Main function for BTC signatures verification
+bool btc_signatures_verification(
+    const std::string& serialized_block_hex,
+    const std::string& signatures_hex,
+    const std::string& public_keys_hex,
+    uint8_t quorum
+) {
+    // Decode serialized block hex to bytes
+    std::vector<unsigned char> serialized_block_bytes = ParseHex(serialized_block_hex);
+    if (serialized_block_bytes.size() < 32) {
+        throw std::runtime_error("Serialized block is shorter than 32 bytes");
+    }
+
+    uint256 sighash; // this is to be defined
+    memcpy(sighash.begin(), serialized_block_bytes.data(), 32);
+
+    // Decode signatures
+    const size_t signature_length = 140; // Length of each DER-encoded signature
+    std::vector<std::vector<unsigned char>> decoded_signatures;
+    for (size_t i = 0; i < signatures_hex.length(); i += signature_length) {
+        std::string signature_hex = signatures_hex.substr(i, signature_length);
+        decoded_signatures.push_back(ParseHex(signature_hex));
+    }
+
+    // Decode public keys
+    const size_t pub_key_length = 66; // Length of each compressed public key in hex
+    std::vector<CPubKey> decoded_pubkeys;
+    for (size_t i = 0; i < public_keys_hex.length(); i += pub_key_length) {
+        std::string pubkey_hex = public_keys_hex.substr(i, pub_key_length);
+        CPubKey pubkey(ParseHex(pubkey_hex));
+        if (!pubkey.IsFullyValid()) {
+            throw std::runtime_error("Failed to decode or invalid public key");
+        }
+        decoded_pubkeys.push_back(pubkey);
+    }
+
+    // Verify signatures
+    int valid_signature_count = 0;
+    for (const auto& sig_bytes : decoded_signatures) {
+        bool signature_valid = false;
+        for (const auto& pubkey : decoded_pubkeys) {
+            if (pubkey.Verify(sighash, sig_bytes)) {
+                signature_valid = true;
+                // break; // No need to check more pubkeys for this signature (break is to avoid duplicates) to discuss
+            }
+        }
+        if (signature_valid) {
+            valid_signature_count++;
+        }
+
+        // Quorum Check
+        if (valid_signature_count >= quorum) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
     if (!block->vtx.empty()) {
         const CTransactionRef& coinbaseTx = block->vtx[0]; // Immutable transaction
@@ -2209,8 +2276,16 @@ void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
                 // Trim the scriptSig
                 std::string trimmed_part = coinbaseData.substr(0, trim_length);
                 std::string remaining_part = coinbaseData.substr(trim_length);
+                std::vector<unsigned char> decodedTrimmedPart = ParseHex(trimmed_part);
+                std::string signatures_hex(decodedTrimmedPart.begin(), decodedTrimmedPart.end());
+                std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
+                std::string public_keys_hex = "0230e330ec4df30d08367f78751b2e1530226d999904f35661de471d7eecae637a";
+                uint8_t quorum = 1;
 
-                LogPrintf("  Trimmed Coinbase Data (first %zu hex chars): %s\n", trim_length, trimmed_part);
+                bool result = btc_signatures_verification(serialized_block_hex, signatures_hex, public_keys_hex, quorum);
+
+                LogPrintf("Signature verification result: %s\n", result ? "true" : "false");
+                LogPrintf("  Trimmed Coinbase Data (first %zu hex chars): %s\n", trim_length, signatures_hex);
                 LogPrintf("  Remaining part of scriptSig (Hex): %s\n", remaining_part);
 
                 std::vector<unsigned char> newScriptSig = ParseHex(remaining_part);
