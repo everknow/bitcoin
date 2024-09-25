@@ -2308,63 +2308,43 @@ const CBlock& RemoveSignatures(std::shared_ptr<CBlock>& block) {
 */
 
 
+CBlock& RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
 
-void RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
-    if (!mutable_block->vtx.empty()) {
-        const CTransactionRef& coinbaseTx = mutable_block->vtx[0]; // Immutable transaction
-
-        LogPrintf("Coinbase Transaction: \n");
-        LogPrintf("  Coinbase Tx Hash: %s\n", coinbaseTx->GetHash().ToString());
-        LogPrintf("  Coinbase Tx Size: %u bytes\n", coinbaseTx->GetTotalSize());
-        LogPrintf("  Number of Outputs: %d\n", coinbaseTx->vout.size());
-
-        if (!coinbaseTx->vin.empty()) {
-            // Convert to mutable transaction for modification
-            CMutableTransaction mutableTx(*coinbaseTx);
-
-            // Extract scriptSig
-            const CTxIn& coinbaseInput = mutableTx.vin[0];
-            std::string coinbaseData = HexStr(std::vector<unsigned char>(coinbaseInput.scriptSig.begin(), coinbaseInput.scriptSig.end()));
-
-            LogPrintf("Coinbase scriptSig in Hex: %s\n", coinbaseData);
-
-            // Define the trim length
-            size_t trim_length = 280; // 140*2 TODO: multiply this for how many sig we have
-
-            if (coinbaseData.length() > trim_length) {
-                // Trim the scriptSig
-                std::string trimmed_part = coinbaseData.substr(0, trim_length);
-                std::string remaining_part = coinbaseData.substr(trim_length);
-                std::vector<unsigned char> decodedTrimmedPart = ParseHex(trimmed_part);
-                std::string signatures_hex(decodedTrimmedPart.begin(), decodedTrimmedPart.end());
-                // TODO, change next line into something like this: std::string serialized_block_hex = HexStr(block);
-                std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
-                std::string public_keys_hex = "0230e330ec4df30d08367f78751b2e1530226d999904f35661de471d7eecae637a";
-                uint8_t quorum = 1;
-
-                bool result = btc_signatures_verification(serialized_block_hex, signatures_hex, public_keys_hex, quorum);
-
-                LogPrintf("Signature verification result: %s\n", result ? "true" : "false");
-                LogPrintf("  Trimmed Coinbase Data (first %zu hex chars): %s\n", trim_length, signatures_hex);
-                LogPrintf("  Remaining part of scriptSig (Hex): %s\n", remaining_part);
-
-                std::vector<unsigned char> newScriptSig = ParseHex(remaining_part);
-                LogPrintf(" NEW scriptSig: %s\n", HexStr(newScriptSig));
-
-                // Update the scriptSig in the mutable transaction
-                mutableTx.vin[0].scriptSig = CScript(newScriptSig.begin(), newScriptSig.end());
-
-                // Replace the coinbase transaction in the block
-                mutable_block->vtx[0] = MakeTransactionRef(std::move(mutableTx));
-            } else {
-                LogPrintf("ScriptSig does not contain external signatures\n");
-            }
-        } else {
-            LogPrintf("Coinbase tx has no inputs\n");
-        }
-    } else {
+    if (mutable_block->vtx.empty()) {
         LogPrintf("Block has no transactions\n");
+        return *mutable_block;
     }
+
+    CMutableTransaction mutable_coinbase_tx(*mutable_block->vtx[0]);
+
+    if (mutable_coinbase_tx.vin.empty()) {
+        LogPrintf("Coinbase transaction has no inputs\n");
+        return *mutable_block;
+    }
+
+    std::string hex_script_with_sigs = HexStr(std::vector<unsigned char>(mutable_coinbase_tx.vin[0].scriptSig.begin(), mutable_coinbase_tx.vin[0].scriptSig.end()));
+
+    size_t sigs_length = 280;
+
+    if (hex_script_with_sigs.length() <= sigs_length) {
+        LogPrintf("ScriptSig does not contain external signatures\n");
+        return *mutable_block;
+    }
+
+    std::string hex_script_original = hex_script_with_sigs.substr(sigs_length);
+    std::string signatures = hex_script_with_sigs.substr(0,sigs_length);
+    std::vector<unsigned char> decodesig = ParseHex(signatures);
+    std::string signatures_hex(decodesig.begin(), decodesig.end());
+
+    LogPrintf("Signatures: %s\n", signatures_hex);
+    LogPrintf("Extracted original scriptSig (without signatures): %s\n", hex_script_original.c_str());
+
+    std::vector<unsigned char> script_original = ParseHex(hex_script_original);
+    mutable_coinbase_tx.vin[0].scriptSig = CScript(script_original.begin(), script_original.end());
+    mutable_block->vtx[0] = MakeTransactionRef(std::move(mutable_coinbase_tx));
+    LogPrintf("Signatures removed successfully, returning modified block\n");
+
+    return *mutable_block;
 }
 
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
