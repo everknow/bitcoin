@@ -181,7 +181,7 @@ ReadStatus PartiallyDownloadedBlock::FillBlock(CBlock& block, const std::vector<
 {
     //TODO replace the following 2 lines with  std::shared_ptr<CBlock> mutable_block = RemoveSignatures(std::make_shared<CBlock>(block));
     std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
-    CheckSigInCoinbaseTransaction(mutable_block);
+    RemoveSignatures(mutable_block);
     if (header.IsNull()) return READ_STATUS_INVALID;
 
     uint256 hash = header.GetHash();

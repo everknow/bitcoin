@@ -2309,9 +2309,9 @@ const CBlock& RemoveSignatures(std::shared_ptr<CBlock>& block) {
 
 
 
-void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
-    if (!block->vtx.empty()) {
-        const CTransactionRef& coinbaseTx = block->vtx[0]; // Immutable transaction
+void RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
+    if (!mutable_block->vtx.empty()) {
+        const CTransactionRef& coinbaseTx = mutable_block->vtx[0]; // Immutable transaction
 
         LogPrintf("Coinbase Transaction: \n");
         LogPrintf("  Coinbase Tx Hash: %s\n", coinbaseTx->GetHash().ToString());
@@ -2355,7 +2355,7 @@ void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
                 mutableTx.vin[0].scriptSig = CScript(newScriptSig.begin(), newScriptSig.end());
 
                 // Replace the coinbase transaction in the block
-                block->vtx[0] = MakeTransactionRef(std::move(mutableTx));
+                mutable_block->vtx[0] = MakeTransactionRef(std::move(mutableTx));
             } else {
                 LogPrintf("ScriptSig does not contain external signatures\n");
             }
@@ -2398,10 +2398,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // the clock to go backward).
 
     //TODO: change name into mutable_block
-    std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
-    //remove CheckSigInCoinbaseTransaction(in_block);
+    std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
+    RemoveSignatures(mutable_block);
     //TODO: change into: if (!CheckBlock(RemoveSignatures(mutable_block), state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
-    if (!CheckBlock(*in_block, state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
+    if (!CheckBlock(*mutable_block, state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
         if (state.GetResult() == BlockValidationResult::BLOCK_MUTATED) {
             // We don't write down blocks to disk if they may have been
             // corrupted, so this should be impossible unless we're having hardware
@@ -4368,7 +4368,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     const CBlock& block = *pblock;
     // std::shared_ptr<CBlock> mutable_block = RemoveSignatures(std::make_shared<CBlock>(block));
     std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
-    // CheckSigInCoinbaseTransaction(in_block);
+    RemoveSignatures(mutable_block);
 
     if (fNewBlock) *fNewBlock = false;
     AssertLockHeld(cs_main);
@@ -4480,12 +4480,12 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         // not very expensive, the anti-DoS benefits of caching failure (of a definitely-invalid block) are not substantial.
 
         // These are checks that are independent of context.
-        std::shared_ptr<CBlock> mblock = std::make_shared<CBlock>(*block);
+        std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(*block);
 
         // Call CheckSigInCoinbaseTransaction to modify the coinbase transaction if necessary
         //TODO: replace this line with if(!VerifySignatures(block)) {error....}
-        CheckSigInCoinbaseTransaction(mblock);
-        bool ret = CheckBlock(*mblock, state, GetConsensus());
+        RemoveSignatures(mutable_block);
+        bool ret = CheckBlock(*mutable_block, state, GetConsensus());
         if (ret) {
             // Store to disk
             ret = AcceptBlock(block, state, &pindex, force_processing, nullptr, new_block, min_pow_checked);
@@ -4662,8 +4662,8 @@ VerifyDBResult CVerifyDB::VerifyDB(
             return VerifyDBResult::CORRUPTED_BLOCK_DB;
         }
         // check level 1: verify block validity
-        std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
-        CheckSigInCoinbaseTransaction(in_block);
+        std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
+        RemoveSignatures(mutable_block);
 
         if (nCheckLevel >= 1 && !CheckBlock(block, state, consensus_params)) {
             LogPrintf("Verification error: found bad block at %d, hash=%s (%s)\n",
