@@ -2250,6 +2250,65 @@ bool btc_signatures_verification(
     return false;
 }
 
+
+/*
+
+bool VerifySignatures(const CBlock& block) {
+  //place hardcoded publickeys here
+  
+  if (..!ok..) {
+    return false;
+  }
+
+  std::string hex_script_with_sigs = HexStr(mutableTx.vin[0].scriptSig <<< .toBinary >>>);
+
+  size_t sigs_length = 280;
+
+  if (hex_script_with_sigs.length() <= sigs_length) {
+    return block; //so it fails
+  }
+
+  std::string hex_signatures = hex_script_with_sigs.substr(0,sigs_length);
+
+  std::string serialized_block_hex = HexStr(block);
+  
+  insert from // Decode signatures
+
+
+
+}
+
+const CBlock& RemoveSignatures(std::shared_ptr<CBlock>& block) {
+  CMutableTransaction mutable_coinbase_tx(block->vtx[0]);
+
+  if (..!ok..) {
+    return block; //so it fails
+  }
+
+  ....
+  
+  std::string hex_script_with_sigs = HexStr(mutableTx.vin[0].scriptSig <<< .toBinary >>>);
+
+  size_t sigs_length = 280;
+
+  if (hex_script_with_sigs.length() <= sigs_length) {
+    return block; //so it fails
+  }
+
+  std::string hex_script_original = hex_script_with_sigs.substr(sigs_length);
+    log if needed
+  std::vector<unsigned char> script_original = ParseHex(hex_script_original)
+  mutable_coinbase_tx.vin[0].scriptSig = CScript(hex_script_original.begin(), hex_script_original.end())
+  
+  block->vtx[0] = MakeTransactionRef(std::move(mutable_coinbase_tx));
+
+  return block;
+
+}
+*/
+
+
+
 void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
     if (!block->vtx.empty()) {
         const CTransactionRef& coinbaseTx = block->vtx[0]; // Immutable transaction
@@ -2278,6 +2337,7 @@ void CheckSigInCoinbaseTransaction(std::shared_ptr<CBlock>& block) {
                 std::string remaining_part = coinbaseData.substr(trim_length);
                 std::vector<unsigned char> decodedTrimmedPart = ParseHex(trimmed_part);
                 std::string signatures_hex(decodedTrimmedPart.begin(), decodedTrimmedPart.end());
+                // TODO, change next line into something like this: std::string serialized_block_hex = HexStr(block);
                 std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
                 std::string public_keys_hex = "0230e330ec4df30d08367f78751b2e1530226d999904f35661de471d7eecae637a";
                 uint8_t quorum = 1;
@@ -2337,8 +2397,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // re-enforce that rule here (at least until we make it impossible for
     // the clock to go backward).
 
+    //TODO: change name into mutable_block
     std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
-    CheckSigInCoinbaseTransaction(in_block);
+    //remove CheckSigInCoinbaseTransaction(in_block);
+    //TODO: change into: if (!CheckBlock(RemoveSignatures(mutable_block), state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
     if (!CheckBlock(*in_block, state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
         if (state.GetResult() == BlockValidationResult::BLOCK_MUTATED) {
             // We don't write down blocks to disk if they may have been
@@ -4304,8 +4366,9 @@ void ChainstateManager::ReportHeadersPresync(const arith_uint256& work, int64_t 
 bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, BlockValidationState& state, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock, bool min_pow_checked)
 {
     const CBlock& block = *pblock;
-    std::shared_ptr<CBlock> in_block = std::make_shared<CBlock>(block);
-    CheckSigInCoinbaseTransaction(in_block);
+    // std::shared_ptr<CBlock> mutable_block = RemoveSignatures(std::make_shared<CBlock>(block));
+    std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
+    // CheckSigInCoinbaseTransaction(in_block);
 
     if (fNewBlock) *fNewBlock = false;
     AssertLockHeld(cs_main);
@@ -4313,7 +4376,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     CBlockIndex *pindexDummy = nullptr;
     CBlockIndex *&pindex = ppindex ? *ppindex : pindexDummy;
 
-    bool accepted_header{AcceptBlockHeader(*in_block, state, &pindex, min_pow_checked)};
+    bool accepted_header{AcceptBlockHeader(*mutable_block, state, &pindex, min_pow_checked)};
     CheckBlockIndex();
 
     if (!accepted_header)
@@ -4354,8 +4417,10 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     }
 
     const CChainParams& params{GetParams()};
-    if (!CheckBlock(*in_block, state, params.GetConsensus()) ||
-        !ContextualCheckBlock(*in_block, state, *this, pindex->pprev)) { // this is the hack we pass here the block without the signatures!
+
+
+    if (!CheckBlock(*mutable_block, state, params.GetConsensus()) ||
+        !ContextualCheckBlock(*mutable_block, state, *this, pindex->pprev)) { // this is the hack we pass here the block without the signatures!
         if (state.IsInvalid() && state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
             m_blockman.m_dirty_blockindex.insert(pindex);
@@ -4418,6 +4483,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         std::shared_ptr<CBlock> mblock = std::make_shared<CBlock>(*block);
 
         // Call CheckSigInCoinbaseTransaction to modify the coinbase transaction if necessary
+        //TODO: replace this line with if(!VerifySignatures(block)) {error....}
         CheckSigInCoinbaseTransaction(mblock);
         bool ret = CheckBlock(*mblock, state, GetConsensus());
         if (ret) {
