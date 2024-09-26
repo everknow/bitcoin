@@ -2304,11 +2304,11 @@ void RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
 
     size_t sigs_length = 280;
 
-    // if (hex_script_with_sigs.length() <= sigs_length) {
-    //     LogPrintf("ScriptSig does not contain external signatures\n");
-    //     // block is unchanged -> CheckBlock should fail
-    //     return;
-    // }
+    if (hex_script_with_sigs.length() <= sigs_length) {
+        LogPrintf("ScriptSig does not contain external signatures\n");
+        // block is unchanged -> CheckBlock should fail
+        return;
+    }
 
     std::string hex_script_original = hex_script_with_sigs.substr(sigs_length);
     LogPrintf("Extracted original scriptSig (without signatures): %s\n", hex_script_original.c_str());
