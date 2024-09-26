@@ -2318,7 +2318,7 @@ void RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
     std::vector<unsigned char> script_original = ParseHex(hex_script_original);
     mutable_coinbase_tx.vin[0].scriptSig = CScript(script_original.begin(), script_original.end());
     mutable_block->vtx[0] = MakeTransactionRef(std::move(mutable_coinbase_tx));
-    LogPrintf("Signatures removed successfully, returning modified block\n");
+    LogPrintf("Signatures removed successfully\n");
 
 }
 
