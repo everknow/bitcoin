@@ -2202,28 +2202,26 @@ static int64_t num_blocks_total = 0;
 // Main function for BTC signatures verification
 bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
     std::string public_keys_hex = "0230e330ec4df30d08367f78751b2e1530226d999904f35661de471d7eecae637a";
-    std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
-    uint8_t quorum = 1;
-
+    
     DataStream block_ser;
     block_ser << TX_WITH_WITNESS(*block);
     // std::string serialized_block_hex = HexStr(block_ser);
-
+    std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
     LogPrintf("Serialized_block_hex %s\n", serialized_block_hex);
+    
+    uint8_t quorum = 1;
 
     if (block->vtx.empty()) {
-        LogPrintf("Block has no transactions\n");
+        LogPrintf("Block has no transactions (no coinbase tx / no sigs)\n");
         return false;
     }
 
-    CMutableTransaction mutable_coinbase_tx(*block->vtx[0]);
-
-    if (mutable_coinbase_tx.vin.empty()) {
+    if (block->vtx[0]->vin.empty()) {
         LogPrintf("Coinbase transaction has no inputs\n");
         return false;
     }
 
-    std::string hex_script_with_sigs = HexStr(std::vector<unsigned char>(mutable_coinbase_tx.vin[0].scriptSig.begin(), mutable_coinbase_tx.vin[0].scriptSig.end()));
+    std::string hex_script_with_sigs = HexStr(std::vector<unsigned char>(block->vtx[0]->vin[0].scriptSig.begin(), block->vtx[0]->vin[0].scriptSig.end()));
 
     size_t sigs_length = 280;
 
