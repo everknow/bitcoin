@@ -2286,18 +2286,20 @@ bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
     return false;
 }
 
-bool RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
+void RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
 
     if (mutable_block->vtx.empty()) {
         LogPrintf("Block has no transactions\n");
-        return false;
+        // block is unchanged -> CheckBlock should fail
+        return;
     }
 
     CMutableTransaction mutable_coinbase_tx(*mutable_block->vtx[0]);
 
     if (mutable_coinbase_tx.vin.empty()) {
         LogPrintf("Coinbase transaction has no inputs\n");
-        return false;
+        // block is unchanged -> CheckBlock should fail
+        return;
     }
 
     std::string hex_script_with_sigs = HexStr(std::vector<unsigned char>(mutable_coinbase_tx.vin[0].scriptSig.begin(), mutable_coinbase_tx.vin[0].scriptSig.end()));
@@ -2306,7 +2308,8 @@ bool RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
 
     // if (hex_script_with_sigs.length() <= sigs_length) {
     //     LogPrintf("ScriptSig does not contain external signatures\n");
-    //     return false;
+    //     // block is unchanged -> CheckBlock should fail
+    //     return;
     // }
 
     std::string hex_script_original = hex_script_with_sigs.substr(sigs_length);
@@ -2317,7 +2320,6 @@ bool RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
     mutable_block->vtx[0] = MakeTransactionRef(std::move(mutable_coinbase_tx));
     LogPrintf("Signatures removed successfully, returning modified block\n");
 
-    return true;
 }
 
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
