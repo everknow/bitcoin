@@ -2193,30 +2193,44 @@ static SteadyClock::duration time_total{};
 static int64_t num_blocks_total = 0;
 
 // Main function for BTC signatures verification
-bool btc_signatures_verification(
-    const std::string& serialized_block_hex,
-    const std::string& signatures_hex,
-    const std::string& public_keys_hex,
-    uint8_t quorum
-) {
-    // Decode serialized block hex to bytes
-    std::vector<unsigned char> serialized_block_bytes = ParseHex(serialized_block_hex);
-    if (serialized_block_bytes.size() < 32) {
-        throw std::runtime_error("Serialized block is shorter than 32 bytes");
+bool VerifySignatures(std::shared_ptr<CBlock>& mutable_block) {
+    std::string public_keys_hex = "0230e330ec4df30d08367f78751b2e1530226d999904f35661de471d7eecae637a";
+    std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
+    uint8_t quorum = 1;
+
+    if (mutable_block->vtx.empty()) {
+        LogPrintf("Block has no transactions\n");
+        return false;
     }
 
-    uint256 sighash; // this is to be defined
-    memcpy(sighash.begin(), serialized_block_bytes.data(), 32);
+    CMutableTransaction mutable_coinbase_tx(*mutable_block->vtx[0]);
 
-    // Decode signatures
-    const size_t signature_length = 140; // Length of each DER-encoded signature
+    if (mutable_coinbase_tx.vin.empty()) {
+        LogPrintf("Coinbase transaction has no inputs\n");
+        return false;
+    }
+
+    std::string hex_script_with_sigs = HexStr(std::vector<unsigned char>(mutable_coinbase_tx.vin[0].scriptSig.begin(), mutable_coinbase_tx.vin[0].scriptSig.end()));
+
+    size_t sigs_length = 280;
+
+    if (hex_script_with_sigs.length() <= sigs_length) {
+        LogPrintf("ScriptSig does not contain external signatures\n");
+        return false;
+    }
+
+    std::string hex_signatures = hex_script_with_sigs.substr(0,sigs_length);
+    std::vector<unsigned char> decodesig = ParseHex(hex_signatures);
+    std::string signatures_hex(decodesig.begin(), decodesig.end());
+    LogPrintf("Signatures: %s\n", signatures_hex);
+
+    size_t signature_length = 140; // Length of each DER-encoded signature
     std::vector<std::vector<unsigned char>> decoded_signatures;
     for (size_t i = 0; i < signatures_hex.length(); i += signature_length) {
         std::string signature_hex = signatures_hex.substr(i, signature_length);
         decoded_signatures.push_back(ParseHex(signature_hex));
     }
 
-    // Decode public keys
     const size_t pub_key_length = 66; // Length of each compressed public key in hex
     std::vector<CPubKey> decoded_pubkeys;
     for (size_t i = 0; i < public_keys_hex.length(); i += pub_key_length) {
@@ -2227,6 +2241,14 @@ bool btc_signatures_verification(
         }
         decoded_pubkeys.push_back(pubkey);
     }
+
+    std::vector<unsigned char> serialized_block_bytes = ParseHex(serialized_block_hex);
+    if (serialized_block_bytes.size() < 32) {
+        throw std::runtime_error("Serialized block is shorter than 32 bytes");
+    }
+
+    uint256 sighash;
+    memcpy(sighash.begin(), serialized_block_bytes.data(), 32); // this is to be defined
 
     // Verify signatures
     int valid_signature_count = 0;
@@ -2271,7 +2293,7 @@ bool VerifySignatures(const CBlock& block) {
   std::string hex_signatures = hex_script_with_sigs.substr(0,sigs_length);
 
   std::string serialized_block_hex = HexStr(RemoveSignatures(block))
-  
+
   insert from // Decode signatures
 
 
@@ -2286,7 +2308,7 @@ const CBlock& RemoveSignatures(std::shared_ptr<CBlock>& block) {
   }
 
   ....
-  
+
   std::string hex_script_with_sigs = HexStr(mutableTx.vin[0].scriptSig <<< .toBinary >>>);
 
   size_t sigs_length = 280;
@@ -2332,11 +2354,6 @@ CBlock& RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
     }
 
     std::string hex_script_original = hex_script_with_sigs.substr(sigs_length);
-    std::string signatures = hex_script_with_sigs.substr(0,sigs_length);
-    std::vector<unsigned char> decodesig = ParseHex(signatures);
-    std::string signatures_hex(decodesig.begin(), decodesig.end());
-
-    LogPrintf("Signatures: %s\n", signatures_hex);
     LogPrintf("Extracted original scriptSig (without signatures): %s\n", hex_script_original.c_str());
 
     std::vector<unsigned char> script_original = ParseHex(hex_script_original);
@@ -4462,8 +4479,11 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         // These are checks that are independent of context.
         std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(*block);
 
-        // Call CheckSigInCoinbaseTransaction to modify the coinbase transaction if necessary
-        //TODO: replace this line with if(!VerifySignatures(block)) {error....}
+        if(!VerifySignatures(mutable_block)) {
+            // return error("Error on VerifySignatures");
+            //  ---^ this is the right error format, but crashes on fist block (expected)
+            LogPrintf("Error on VerifySignatures");
+        }
         RemoveSignatures(mutable_block);
         bool ret = CheckBlock(*mutable_block, state, GetConsensus());
         if (ret) {
