@@ -4317,8 +4317,6 @@ void ChainstateManager::ReportHeadersPresync(const arith_uint256& work, int64_t 
 bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, BlockValidationState& state, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock, bool min_pow_checked)
 {
     const CBlock& block = *pblock;
-    std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
-    RemoveSignatures(mutable_block);
 
     if (fNewBlock) *fNewBlock = false;
     AssertLockHeld(cs_main);
@@ -4326,6 +4324,8 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     CBlockIndex *pindexDummy = nullptr;
     CBlockIndex *&pindex = ppindex ? *ppindex : pindexDummy;
 
+    std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
+    RemoveSignatures(mutable_block);
     bool accepted_header{AcceptBlockHeader(*mutable_block, state, &pindex, min_pow_checked)};
     CheckBlockIndex();
 
