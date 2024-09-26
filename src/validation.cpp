@@ -2200,23 +2200,23 @@ static SteadyClock::duration time_total{};
 static int64_t num_blocks_total = 0;
 
 // Main function for BTC signatures verification
-bool VerifySignatures(std::shared_ptr<CBlock>& mutable_block) {
+bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
     std::string public_keys_hex = "0230e330ec4df30d08367f78751b2e1530226d999904f35661de471d7eecae637a";
     std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
     uint8_t quorum = 1;
 
     DataStream block_ser;
-    block_ser << TX_WITH_WITNESS(*mutable_block);
+    block_ser << TX_WITH_WITNESS(*block);
     // std::string serialized_block_hex = HexStr(block_ser);
 
     LogPrintf("Serialized_block_hex %s\n", serialized_block_hex);
 
-    if (mutable_block->vtx.empty()) {
+    if (block->vtx.empty()) {
         LogPrintf("Block has no transactions\n");
         return false;
     }
 
-    CMutableTransaction mutable_coinbase_tx(*mutable_block->vtx[0]);
+    CMutableTransaction mutable_coinbase_tx(*block->vtx[0]);
 
     if (mutable_coinbase_tx.vin.empty()) {
         LogPrintf("Coinbase transaction has no inputs\n");
@@ -2286,86 +2286,28 @@ bool VerifySignatures(std::shared_ptr<CBlock>& mutable_block) {
     return false;
 }
 
-
-/*
-
-bool VerifySignatures(const CBlock& block) {
-  //place hardcoded publickeys here
-  
-  if (..!ok..) {
-    return false;
-  }
-
-  std::string hex_script_with_sigs = HexStr(mutableTx.vin[0].scriptSig <<< .toBinary >>>);
-
-  size_t sigs_length = 280;
-
-  if (hex_script_with_sigs.length() <= sigs_length) {
-    return block; //so it fails
-  }
-
-  std::string hex_signatures = hex_script_with_sigs.substr(0,sigs_length);
-
-  std::string serialized_block_hex = HexStr(RemoveSignatures(block))
-
-  insert from // Decode signatures
-
-
-
-}
-
-const CBlock& RemoveSignatures(std::shared_ptr<CBlock>& block) {
-  CMutableTransaction mutable_coinbase_tx(block->vtx[0]);
-
-  if (..!ok..) {
-    return block; //so it fails
-  }
-
-  ....
-
-  std::string hex_script_with_sigs = HexStr(mutableTx.vin[0].scriptSig <<< .toBinary >>>);
-
-  size_t sigs_length = 280;
-
-  if (hex_script_with_sigs.length() <= sigs_length) {
-    return block; //so it fails
-  }
-
-  std::string hex_script_original = hex_script_with_sigs.substr(sigs_length);
-    log if needed
-  std::vector<unsigned char> script_original = ParseHex(hex_script_original)
-  mutable_coinbase_tx.vin[0].scriptSig = CScript(hex_script_original.begin(), hex_script_original.end())
-  
-  block->vtx[0] = MakeTransactionRef(std::move(mutable_coinbase_tx));
-
-  return block;
-
-}
-*/
-
-
-CBlock& RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
+bool RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
 
     if (mutable_block->vtx.empty()) {
         LogPrintf("Block has no transactions\n");
-        return *mutable_block;
+        return false;
     }
 
     CMutableTransaction mutable_coinbase_tx(*mutable_block->vtx[0]);
 
     if (mutable_coinbase_tx.vin.empty()) {
         LogPrintf("Coinbase transaction has no inputs\n");
-        return *mutable_block;
+        return false;
     }
 
     std::string hex_script_with_sigs = HexStr(std::vector<unsigned char>(mutable_coinbase_tx.vin[0].scriptSig.begin(), mutable_coinbase_tx.vin[0].scriptSig.end()));
 
     size_t sigs_length = 280;
 
-    if (hex_script_with_sigs.length() <= sigs_length) {
-        LogPrintf("ScriptSig does not contain external signatures\n");
-        return *mutable_block;
-    }
+    // if (hex_script_with_sigs.length() <= sigs_length) {
+    //     LogPrintf("ScriptSig does not contain external signatures\n");
+    //     return false;
+    // }
 
     std::string hex_script_original = hex_script_with_sigs.substr(sigs_length);
     LogPrintf("Extracted original scriptSig (without signatures): %s\n", hex_script_original.c_str());
@@ -2375,7 +2317,7 @@ CBlock& RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
     mutable_block->vtx[0] = MakeTransactionRef(std::move(mutable_coinbase_tx));
     LogPrintf("Signatures removed successfully, returning modified block\n");
 
-    return *mutable_block;
+    return true;
 }
 
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
@@ -2408,10 +2350,8 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // re-enforce that rule here (at least until we make it impossible for
     // the clock to go backward).
 
-    //TODO: change name into mutable_block
     std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
     RemoveSignatures(mutable_block);
-    //TODO: change into: if (!CheckBlock(RemoveSignatures(mutable_block), state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
     if (!CheckBlock(*mutable_block, state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
         if (state.GetResult() == BlockValidationResult::BLOCK_MUTATED) {
             // We don't write down blocks to disk if they may have been
@@ -4377,7 +4317,6 @@ void ChainstateManager::ReportHeadersPresync(const arith_uint256& work, int64_t 
 bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, BlockValidationState& state, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock, bool min_pow_checked)
 {
     const CBlock& block = *pblock;
-    // std::shared_ptr<CBlock> mutable_block = RemoveSignatures(std::make_shared<CBlock>(block));
     std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
     RemoveSignatures(mutable_block);
 
@@ -4431,7 +4370,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
 
 
     if (!CheckBlock(*mutable_block, state, params.GetConsensus()) ||
-        !ContextualCheckBlock(*mutable_block, state, *this, pindex->pprev)) { // this is the hack we pass here the block without the signatures!
+        !ContextualCheckBlock(*mutable_block, state, *this, pindex->pprev)) {
         if (state.IsInvalid() && state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
             m_blockman.m_dirty_blockindex.insert(pindex);
@@ -4490,14 +4429,13 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         // https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-February/016697.html.  Because CheckBlock() is
         // not very expensive, the anti-DoS benefits of caching failure (of a definitely-invalid block) are not substantial.
 
-        // These are checks that are independent of context.
-        std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(*block);
-
-        if(!VerifySignatures(mutable_block)) {
+        if(!VerifySignatures(block)) {
             // return error("Error on VerifySignatures");
             //  ---^ this is the right error format, but crashes on fist block (expected)
             LogPrintf("Error on VerifySignatures\n");
         }
+
+        std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(*block);
         RemoveSignatures(mutable_block);
         bool ret = CheckBlock(*mutable_block, state, GetConsensus());
         if (ret) {
@@ -4676,9 +4614,6 @@ VerifyDBResult CVerifyDB::VerifyDB(
             return VerifyDBResult::CORRUPTED_BLOCK_DB;
         }
         // check level 1: verify block validity
-        std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
-        RemoveSignatures(mutable_block);
-
         if (nCheckLevel >= 1 && !CheckBlock(block, state, consensus_params)) {
             LogPrintf("Verification error: found bad block at %d, hash=%s (%s)\n",
                       pindex->nHeight, pindex->GetBlockHash().ToString(), state.ToString());

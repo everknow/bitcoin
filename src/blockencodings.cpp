@@ -179,7 +179,6 @@ bool PartiallyDownloadedBlock::IsTxAvailable(size_t index) const
 
 ReadStatus PartiallyDownloadedBlock::FillBlock(CBlock& block, const std::vector<CTransactionRef>& vtx_missing)
 {
-    //TODO replace the following 2 lines with  std::shared_ptr<CBlock> mutable_block = RemoveSignatures(std::make_shared<CBlock>(block));
     std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
     RemoveSignatures(mutable_block);
     if (header.IsNull()) return READ_STATUS_INVALID;
