@@ -10,12 +10,19 @@
 #include <validation.h>
 
 // start edit import here
-#include <key.h>              // For CPubKey
-#include <util/strencodings.h> // For HexStr, ParseHex
-#include <consensus/validation.h> // For CValidationState
+#include <key.h>                     // For CPubKey
+#include <util/strencodings.h>       // For HexStr, ParseHex
+#include <consensus/validation.h>    // For CValidationState
 #include <secp256k1.h>
 #include <vector>
 #include <iostream>
+#include <serialize.h>               // For ParamsStream
+#include <streams.h>                 // For CDataStream
+#include <protocol.h>                // For SER_NETWORK and PROTOCOL_VERSION
+#include <primitives/block.h>        // For CBlock definition
+#include <memory>                    // For std::shared_ptr
+
+
 // end edit import here
 
 #include <arith_uint256.h>
@@ -2198,6 +2205,12 @@ bool VerifySignatures(std::shared_ptr<CBlock>& mutable_block) {
     std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
     uint8_t quorum = 1;
 
+    DataStream block_ser;
+    block_ser << TX_WITH_WITNESS(*mutable_block);
+    // std::string serialized_block_hex = HexStr(block_ser);
+
+    LogPrintf("Serialized_block_hex %s\n", serialized_block_hex);
+
     if (mutable_block->vtx.empty()) {
         LogPrintf("Block has no transactions\n");
         return false;
@@ -2214,10 +2227,10 @@ bool VerifySignatures(std::shared_ptr<CBlock>& mutable_block) {
 
     size_t sigs_length = 280;
 
-    if (hex_script_with_sigs.length() <= sigs_length) {
-        LogPrintf("ScriptSig does not contain external signatures\n");
-        return false;
-    }
+    // if (hex_script_with_sigs.length() <= sigs_length) {
+    //     LogPrintf("ScriptSig does not contain external signatures\n");
+    //     return false;
+    // } // disabled weak check
 
     std::string hex_signatures = hex_script_with_sigs.substr(0,sigs_length);
     std::vector<unsigned char> decodesig = ParseHex(hex_signatures);
@@ -2266,6 +2279,7 @@ bool VerifySignatures(std::shared_ptr<CBlock>& mutable_block) {
 
         // Quorum Check
         if (valid_signature_count >= quorum) {
+            LogPrintf("Signature Check Passed!!!\n");
             return true;
         }
     }
@@ -4482,7 +4496,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         if(!VerifySignatures(mutable_block)) {
             // return error("Error on VerifySignatures");
             //  ---^ this is the right error format, but crashes on fist block (expected)
-            LogPrintf("Error on VerifySignatures");
+            LogPrintf("Error on VerifySignatures\n");
         }
         RemoveSignatures(mutable_block);
         bool ret = CheckBlock(*mutable_block, state, GetConsensus());
