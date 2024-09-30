@@ -2202,13 +2202,6 @@ static int64_t num_blocks_total = 0;
 // Main function for BTC signatures verification
 bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
     std::string public_keys_hex = "0230e330ec4df30d08367f78751b2e1530226d999904f35661de471d7eecae637a";
-    
-    DataStream block_ser;
-    block_ser << TX_WITH_WITNESS(*block);
-    // std::string serialized_block_hex = HexStr(block_ser);
-    std::string serialized_block_hex = "00000020fcc974058b62a729929c8242971c4995034f21a3750e75b30583b54aedf3843f128767f4f58cd289f9f69ad196304890ca84e5b8f3ef0ea11b53723f54ae31514d9bd966ffff7f200000000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402b61100ffffffff02040000000000000016001441ea086834d0796c3e2c793eae05771995fdd3920000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
-    LogPrintf("Serialized_block_hex %s\n", serialized_block_hex);
-    
     uint8_t quorum = 1;
 
     if (block->vtx.empty()) {
@@ -2253,13 +2246,24 @@ bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
         decoded_pubkeys.push_back(pubkey);
     }
 
-    std::vector<unsigned char> serialized_block_bytes = ParseHex(serialized_block_hex);
-    if (serialized_block_bytes.size() < 32) {
-        throw std::runtime_error("Serialized block is shorter than 32 bytes");
-    }
+    std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(*block);
+    RemoveSignatures(mutable_block);
 
+    DataStream clean_block_ser;
+    clean_block_ser << TX_WITH_WITNESS(*mutable_block);
+    std::string serialized_block_hex = HexStr(clean_block_ser);
+
+    std::vector<unsigned char> serialized_block_bytes = ParseHex(serialized_block_hex);
+    std::string result(serialized_block_bytes.begin(), serialized_block_bytes.end());
+
+    CSHA256 hasher;
+    hasher.Write((unsigned char*)clean_block_ser.data(), clean_block_ser.size());
+    unsigned char hash[CSHA256::OUTPUT_SIZE];
+    hasher.Finalize(hash);
+
+    // Copy the resulting hash into the sighash variable
     uint256 sighash;
-    memcpy(sighash.begin(), serialized_block_bytes.data(), 32); // this is to be defined
+    memcpy(sighash.begin(), hash, CSHA256::OUTPUT_SIZE);
 
     // Verify signatures
     int valid_signature_count = 0;
@@ -2267,8 +2271,11 @@ bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
         bool signature_valid = false;
         for (const auto& pubkey : decoded_pubkeys) {
             if (pubkey.Verify(sighash, sig_bytes)) {
+                LogPrintf("Signature is VALID for Public Key");
                 signature_valid = true;
                 // break; // No need to check more pubkeys for this signature (break is to avoid duplicates) to discuss
+            } else {
+                LogPrintf("Signature is INVALID for Public Key");
             }
         }
         if (signature_valid) {
