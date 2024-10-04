@@ -21,7 +21,7 @@
 #include <protocol.h>                // For SER_NETWORK and PROTOCOL_VERSION
 #include <primitives/block.h>        // For CBlock definition
 #include <memory>                    // For std::shared_ptr
-
+#include <core_io.h>                 // For ScriptToAsmStr
 
 // end edit import here
 
@@ -2201,8 +2201,45 @@ static int64_t num_blocks_total = 0;
 
 // Main function for BTC signatures verification
 bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
-    std::string public_keys_hex = "0230e330ec4df30d08367f78751b2e1530226d999904f35661de471d7eecae637a";
     uint8_t quorum = 1;
+
+    std::vector<std::string> public_keys;
+
+    if (block->vtx.size() <= 1) {
+        LogPrintf("No redeem script in block: not enough transactions.\n");
+    } else {
+        const CScript& scriptSig = block->vtx[1]->vin[0].scriptSig;
+
+        // Now, extract the redeem script, which is usually the last push in scriptSig
+        opcodetype opcode;
+        std::vector<unsigned char> vch;
+        CScript redeemScript;
+        CScript::const_iterator pc = scriptSig.begin();
+        bool redeemScriptFound = false;
+
+        while (scriptSig.GetOp(pc, opcode, vch)) {
+            if (vch.size() > 0) {
+                redeemScript = CScript(vch.begin(), vch.end());
+                redeemScriptFound = true;
+            }
+        }
+
+        if (redeemScriptFound) {
+
+            // Now, extract the public keys from the redeem script
+            CScript::const_iterator pc_redeem = redeemScript.begin();
+            int pubkey_count = 0;
+            while (redeemScript.GetOp(pc_redeem, opcode, vch)) {
+                if (vch.size() == 33) {  // A public key is 33 bytes long
+                    pubkey_count++;
+                    std::string pubkey_hex = HexStr(vch);
+                    public_keys.push_back(pubkey_hex);
+                }
+            }
+        } else {
+            LogPrintf("No redeem script found in the scriptSig.\n");
+        }
+    }
 
     if (block->vtx.empty()) {
         LogPrintf("Block has no transactions (no coinbase tx / no sigs)\n");
@@ -2235,10 +2272,8 @@ bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
         decoded_signatures.push_back(ParseHex(signature_hex));
     }
 
-    const size_t pub_key_length = 66; // Length of each compressed public key in hex
     std::vector<CPubKey> decoded_pubkeys;
-    for (size_t i = 0; i < public_keys_hex.length(); i += pub_key_length) {
-        std::string pubkey_hex = public_keys_hex.substr(i, pub_key_length);
+    for (const std::string& pubkey_hex : public_keys) {
         CPubKey pubkey(ParseHex(pubkey_hex));
         if (!pubkey.IsFullyValid()) {
             throw std::runtime_error("Failed to decode or invalid public key");
