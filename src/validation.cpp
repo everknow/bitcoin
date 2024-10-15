@@ -9,6 +9,26 @@
 
 #include <validation.h>
 
+// start edit import here
+#include <key.h>                     // For CPubKey
+#include <util/strencodings.h>       // For HexStr, ParseHex
+#include <consensus/validation.h>    // For CValidationState
+#include <secp256k1.h>
+#include <vector>
+#include <iostream>
+#include <serialize.h>               // For ParamsStream
+#include <streams.h>                 // For CDataStream
+#include <protocol.h>                // For SER_NETWORK and PROTOCOL_VERSION
+#include <primitives/block.h>        // For CBlock definition
+#include <memory>                    // For std::shared_ptr
+#include <core_io.h>                 // For ScriptToAsmStr
+#include <addresstype.h>             // For CTxDestination
+#include <key_io.h>                  // For DecodeDestination
+#include <index/txindex.h>           // For TxIndex
+#include <index/txindex.h>           // For TxIndex
+
+// end edit import here
+
 #include <arith_uint256.h>
 #include <chain.h>
 #include <checkqueue.h>
@@ -2183,6 +2203,408 @@ static SteadyClock::duration time_index{};
 static SteadyClock::duration time_total{};
 static int64_t num_blocks_total = 0;
 
+
+std::vector<std::string> GetReceiverAddressesFromChain(Chainstate& chainstate, const std::string& sender_addr) {
+    CBlock block;
+    const CBlockIndex* pindex = chainstate.m_chain.Tip();  // Start from tip (latest block)
+    std::vector<std::string> receiver_addresses;
+    int blockCounter = 0;  // blocks processed counter
+    const int maxBlocks = 5;  // Check only the last 5 blocks
+
+    while (pindex != nullptr && blockCounter < maxBlocks) {
+        LogPrintf("Processing block: %s\n", pindex->GetBlockHash().ToString());
+
+        // Read the block from disk
+        if (chainstate.m_blockman.ReadBlockFromDisk(block, *pindex)) {
+            LogPrintf("ReadBlockFromDisk successful for block: %s\n", pindex->GetBlockHash().ToString());
+
+            CBlockUndo blockUndo;
+
+            // Read the undo data; if it fails, continue to the next block
+            if (!chainstate.m_blockman.UndoReadFromDisk(blockUndo, *pindex)) {
+                LogPrintf("Error: Unable to read undo data for block %s, skipping block\n", pindex->GetBlockHash().ToString());
+                pindex = pindex->pprev;
+                continue;
+            }
+
+            // The undo data should have one less transaction than the block (coinbase tx)
+            if (blockUndo.vtxundo.size() != block.vtx.size() - 1) {
+                LogPrintf("Error: Mismatch between block transactions and undo data for block %s, skipping block\n", pindex->GetBlockHash().ToString());
+                pindex = pindex->pprev;
+                continue;
+            }
+
+            // Process each transaction in the block (start from index 1 to skip coinbase)
+            for (size_t txIndex = 1; txIndex < block.vtx.size(); ++txIndex) {
+                const auto& tx = block.vtx[txIndex];
+                bool isSenderMatch = false;
+
+                LogPrintf("Processing transaction: %s\n", tx->GetHash().ToString());
+
+                // Bounds check for undo data (should use txIndex - 1 cause undodata skips coinbase tx)
+                size_t undoIndex = txIndex - 1;
+                if (undoIndex >= blockUndo.vtxundo.size()) {
+                    LogPrintf("Undo data out of bounds for transaction index %d in block %s\n", txIndex, pindex->GetBlockHash().ToString());
+                    continue;
+                }
+
+                // Check each input for the sender address
+                for (const auto& vin : tx->vin) {
+                    if (vin.prevout.n >= blockUndo.vtxundo[undoIndex].vprevout.size()) {
+                        LogPrintf("Input index %d out of bounds for transaction: %s\n", vin.prevout.n, tx->GetHash().ToString());
+                        continue;
+                    }
+
+                    const Coin& prev_coin = blockUndo.vtxundo[undoIndex].vprevout[vin.prevout.n];
+                    CTxDestination senderDestination;
+
+                    // Extract the sender address from the previous output
+                    if (ExtractDestination(prev_coin.out.scriptPubKey, senderDestination)) {
+                        std::string senderAddress = EncodeDestination(senderDestination);
+                        LogPrintf("Extracted sender address: %s\n", senderAddress);
+
+                        if (senderAddress == sender_addr) {
+                            isSenderMatch = true;
+                            LogPrintf("Sender match found: %s in transaction: %s\n", sender_addr, tx->GetHash().ToString());
+                            break;
+                        }
+                    } else {
+                        LogPrintf("Failed to extract sender address for input script: %s\n", HexStr(prev_coin.out.scriptPubKey));
+                    }
+                }
+
+                // If sender match is found, extract receiver addresses
+                if (isSenderMatch) {
+                    for (const auto& txout : tx->vout) {
+                        CTxDestination destination;
+
+                        LogPrintf("Processing output script: %s\n", HexStr(txout.scriptPubKey));
+
+                        if (ExtractDestination(txout.scriptPubKey, destination)) {
+                            std::string receiverAddress = EncodeDestination(destination);
+                            LogPrintf("Extracted receiver address: %s\n", receiverAddress);
+                            if (receiverAddress[0] == '2') {
+                                LogPrintf("Receiver address starts with '2', adding to list: %s\n", receiverAddress);
+                                receiver_addresses.push_back(receiverAddress);
+                            }
+                        } else {
+                            LogPrintf("Failed to extract receiver address for output script: %s\n", HexStr(txout.scriptPubKey));
+                        }
+                    }
+                }
+            }
+        } else {
+            LogPrintf("Failed to read block from disk: %s\n", pindex->GetBlockHash().ToString());
+        }
+
+        // Move to the previous block
+        pindex = pindex->pprev;
+        blockCounter++;
+    }
+
+    return receiver_addresses;
+}
+
+
+std::vector<std::string> ExtractMultisignatureScript(Chainstate& chainstate, const std::string& sender_addr) {
+    CBlock block;
+    const CBlockIndex* pindex = chainstate.m_chain.Tip();
+    std::vector<std::string> public_keys;
+    int blockCounter = 0;
+    const int maxBlocks = 5;
+
+    while (pindex != nullptr && blockCounter < maxBlocks) {
+        LogPrintf("Processing block: %s\n", pindex->GetBlockHash().ToString());
+
+        if (!chainstate.m_blockman.ReadBlockFromDisk(block, *pindex)) {
+            LogPrintf("Error: Failed to read block from disk: %s\n", pindex->GetBlockHash().ToString());
+            pindex = pindex->pprev;
+            continue; // TODO: check this potential crash
+        }
+
+        LogPrintf("ReadBlockFromDisk successful for block: %s\n", pindex->GetBlockHash().ToString());
+
+        CBlockUndo blockUndo;
+
+        if (!chainstate.m_blockman.UndoReadFromDisk(blockUndo, *pindex)) {
+            LogPrintf("Error: Unable to read undo data for block %s, skipping block\n", pindex->GetBlockHash().ToString());
+            pindex = pindex->pprev;
+            continue;
+        }
+
+        if (blockUndo.vtxundo.size() != block.vtx.size() - 1) {
+            LogPrintf("Error: Mismatch between block transactions and undo data for block %s, skipping block\n", pindex->GetBlockHash().ToString());
+            pindex = pindex->pprev;
+            continue;
+        }
+
+        for (size_t txIndex = 1; txIndex < block.vtx.size(); ++txIndex) {
+            const auto& tx = block.vtx[txIndex];
+            bool isSenderMatch = false;
+
+            LogPrintf("Processing transaction: %s\n", tx->GetHash().ToString());
+
+            size_t undoIndex = txIndex - 1;
+            if (undoIndex >= blockUndo.vtxundo.size()) {
+                LogPrintf("Undo data out of bounds for transaction index %d in block %s\n", txIndex, pindex->GetBlockHash().ToString());
+                continue;
+            }
+
+            for (const auto& vin : tx->vin) {
+                if (vin.prevout.n >= blockUndo.vtxundo[undoIndex].vprevout.size()) {
+                    LogPrintf("Input index %d out of bounds for transaction: %s\n", vin.prevout.n, tx->GetHash().ToString());
+                    continue;
+                }
+
+                const Coin& prev_coin = blockUndo.vtxundo[undoIndex].vprevout[vin.prevout.n];
+                CTxDestination senderDestination;
+
+                if (!ExtractDestination(prev_coin.out.scriptPubKey, senderDestination)) {
+                    LogPrintf("Failed to extract sender address for input script: %s\n", HexStr(prev_coin.out.scriptPubKey));
+                    continue;
+                }
+
+                std::string senderAddress = EncodeDestination(senderDestination);
+                LogPrintf("Extracted sender address: %s\n", senderAddress);
+
+                if (senderAddress == sender_addr) {
+                    isSenderMatch = true;
+                    LogPrintf("Sender match found: %s in transaction: %s\n", sender_addr, tx->GetHash().ToString());
+                    break;
+                }
+            }
+
+            // // If sender match is found, check for redeem script and extract public keys
+            // if (isSenderMatch && block.vtx.size() > 1) {
+                // LogPrintf("Sender Match: %s\n", );
+            //     const CScript& scriptSig = block.vtx[1]->vin[0].scriptSig;  // Assuming the second transaction
+
+            //     LogPrintf("Processing scriptSig for redeem script extraction.\n");
+
+            //     opcodetype opcode;
+            //     std::vector<unsigned char> vch;
+            //     CScript redeemScript;
+            //     CScript::const_iterator pc = scriptSig.begin();
+            //     bool redeemScriptFound = false;
+
+            //     // Extract the redeem script
+            //     while (scriptSig.GetOp(pc, opcode, vch)) {
+            //         if (vch.size() > 0) {
+            //             redeemScript = CScript(vch.begin(), vch.end());
+            //             redeemScriptFound = true;
+            //         }
+            //     }
+
+            //     if (redeemScriptFound) {
+            //         LogPrintf("Redeem script found, extracting public keys...\n");
+
+            //         CScript::const_iterator pc_redeem = redeemScript.begin();
+            //         while (redeemScript.GetOp(pc_redeem, opcode, vch)) {
+            //             if (vch.size() == 33) {  // A public key is 33 bytes long
+            //                 std::string pubkey_hex = HexStr(vch);
+            //                 public_keys.push_back(pubkey_hex);
+            //                 LogPrintf("Extracted pubkey: %s\n", pubkey_hex);
+            //             }
+            //         }
+            //     } else {
+            //         LogPrintf("No redeem script found in the scriptSig.\n");
+            //     }
+            // }
+        }
+
+        pindex = pindex->pprev;
+        blockCounter++;
+    }
+
+    return public_keys;
+}
+
+// Main function for BTC signatures verification
+bool VerifySignatures(const std::shared_ptr<const CBlock>& block, ChainstateManager& chainman) {
+    uint8_t quorum = 1;
+
+    // 1) hardcoded address (mpe3KD7CXLur1A9tMPu4YNNDga1ZFQsTG7)
+    // 2) fetch tx made by this address and get the multisig one
+
+    // 3) fetch tx made by this multisig and get the multisig one
+
+    // from tx get redeem_script
+    // ...
+
+    std::vector<std::string> public_keys;
+    Chainstate& chainstate = chainman.ActiveChainstate();
+    std::string sender_addr = "mpe3KD7CXLur1A9tMPu4YNNDga1ZFQsTG7";
+    // Get all receiver addresses from all blocks
+    std::vector<std::string> multisig_receiver_addr = GetReceiverAddressesFromChain(chainstate, sender_addr);
+    // std::vector<std::string> multisig_pubkeys = ExtractMultisignatureScript(chainstate, multisig_receiver_addr[0]);
+
+    // Check if any public keys were extracted and print them
+    // if (!multisig_pubkeys.empty()) {
+    //     LogPrintf("Extracted multisig public keys:\n");
+    //     for (const auto& pubkey : multisig_pubkeys) {
+    //         LogPrintf("%s\n", pubkey);  // Print each public key in hex format
+    //     }
+    // } else {
+    //     LogPrintf("No multisig public keys extracted for address: %s\n", multisig_receiver_addr[0]);
+    // }
+
+    if (block->vtx.size() <= 1) {
+        LogPrintf("No redeem script in block: not enough transactions.\n");
+    } else {
+        const CScript& scriptSig = block->vtx[1]->vin[0].scriptSig;
+
+        // Now, extract the redeem script, which is usually the last push in scriptSig
+        opcodetype opcode;
+        std::vector<unsigned char> vch;
+        CScript redeemScript;
+        CScript::const_iterator pc = scriptSig.begin();
+        bool redeemScriptFound = false;
+
+        while (scriptSig.GetOp(pc, opcode, vch)) {
+            if (vch.size() > 0) {
+                redeemScript = CScript(vch.begin(), vch.end());
+                redeemScriptFound = true;
+            }
+        }
+
+        if (redeemScriptFound) {
+
+            // Now, extract the public keys from the redeem script
+            CScript::const_iterator pc_redeem = redeemScript.begin();
+            int pubkey_count = 0;
+            while (redeemScript.GetOp(pc_redeem, opcode, vch)) {
+                if (vch.size() == 33) {  // A public key is 33 bytes long
+                    pubkey_count++;
+                    std::string pubkey_hex = HexStr(vch);
+                    public_keys.push_back(pubkey_hex);
+                }
+            }
+        } else {
+            LogPrintf("No redeem script found in the scriptSig.\n");
+        }
+    }
+
+    if (block->vtx.empty()) {
+        LogPrintf("Block has no transactions (no coinbase tx / no sigs)\n");
+        return false;
+    }
+
+    if (block->vtx[0]->vin.empty()) {
+        LogPrintf("Coinbase transaction has no inputs\n");
+        return false;
+    }
+
+    std::string hex_script_with_sigs = HexStr(std::vector<unsigned char>(block->vtx[0]->vin[0].scriptSig.begin(), block->vtx[0]->vin[0].scriptSig.end()));
+
+    size_t sigs_length = 280;
+
+    // if (hex_script_with_sigs.length() <= sigs_length) {
+    //     LogPrintf("ScriptSig does not contain external signatures\n");
+    //     return false;
+    // } // disabled weak check
+
+    std::string hex_signatures = hex_script_with_sigs.substr(0,sigs_length);
+    std::vector<unsigned char> decodesig = ParseHex(hex_signatures);
+    std::string signatures_hex(decodesig.begin(), decodesig.end());
+    LogPrintf("Signatures: %s\n", signatures_hex);
+
+    size_t signature_length = 140; // Length of each DER-encoded signature
+    std::vector<std::vector<unsigned char>> decoded_signatures;
+    for (size_t i = 0; i < signatures_hex.length(); i += signature_length) {
+        std::string signature_hex = signatures_hex.substr(i, signature_length);
+        decoded_signatures.push_back(ParseHex(signature_hex));
+    }
+
+    std::vector<CPubKey> decoded_pubkeys;
+    for (const std::string& pubkey_hex : public_keys) {
+        CPubKey pubkey(ParseHex(pubkey_hex));
+        if (!pubkey.IsFullyValid()) {
+            throw std::runtime_error("Failed to decode or invalid public key");
+        }
+        decoded_pubkeys.push_back(pubkey);
+    }
+
+    std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(*block);
+    RemoveSignatures(mutable_block);
+
+    DataStream clean_block_ser;
+    clean_block_ser << TX_WITH_WITNESS(*mutable_block);
+    std::string serialized_block_hex = HexStr(clean_block_ser);
+
+    std::vector<unsigned char> serialized_block_bytes = ParseHex(serialized_block_hex);
+    std::string result(serialized_block_bytes.begin(), serialized_block_bytes.end());
+
+    CSHA256 hasher;
+    hasher.Write((unsigned char*)clean_block_ser.data(), clean_block_ser.size());
+    unsigned char hash[CSHA256::OUTPUT_SIZE];
+    hasher.Finalize(hash);
+
+    // Copy the resulting hash into the sighash variable
+    uint256 sighash;
+    memcpy(sighash.begin(), hash, CSHA256::OUTPUT_SIZE);
+
+    // Verify signatures
+    int valid_signature_count = 0;
+    for (const auto& sig_bytes : decoded_signatures) {
+        bool signature_valid = false;
+        for (const auto& pubkey : decoded_pubkeys) {
+            if (pubkey.Verify(sighash, sig_bytes)) {
+                LogPrintf("Signature is VALID for Public Key");
+                signature_valid = true;
+                // break; // No need to check more pubkeys for this signature (break is to avoid duplicates) to discuss
+            } else {
+                LogPrintf("Signature is INVALID for Public Key");
+            }
+        }
+        if (signature_valid) {
+            valid_signature_count++;
+        }
+
+        // Quorum Check
+        if (valid_signature_count >= quorum) {
+            LogPrintf("Signature Check Passed!!!\n");
+            return true;
+        }
+    }
+    return false;
+}
+
+void RemoveSignatures(std::shared_ptr<CBlock>& mutable_block) {
+
+    if (mutable_block->vtx.empty()) {
+        LogPrintf("Block has no transactions\n");
+        // block is unchanged -> CheckBlock should fail
+        return;
+    }
+
+    CMutableTransaction mutable_coinbase_tx(*mutable_block->vtx[0]);
+
+    if (mutable_coinbase_tx.vin.empty()) {
+        LogPrintf("Coinbase transaction has no inputs\n");
+        // block is unchanged -> CheckBlock should fail
+        return;
+    }
+
+    std::string hex_script_with_sigs = HexStr(std::vector<unsigned char>(mutable_coinbase_tx.vin[0].scriptSig.begin(), mutable_coinbase_tx.vin[0].scriptSig.end()));
+
+    size_t sigs_length = 280;
+
+    if (hex_script_with_sigs.length() <= sigs_length) {
+        LogPrintf("ScriptSig does not contain external signatures\n");
+        // block is unchanged -> CheckBlock should fail
+        return;
+    }
+
+    std::string hex_script_original = hex_script_with_sigs.substr(sigs_length);
+    LogPrintf("Extracted original scriptSig (without signatures): %s\n", hex_script_original.c_str());
+
+    std::vector<unsigned char> script_original = ParseHex(hex_script_original);
+    mutable_coinbase_tx.vin[0].scriptSig = CScript(script_original.begin(), script_original.end());
+    mutable_block->vtx[0] = MakeTransactionRef(std::move(mutable_coinbase_tx));
+    LogPrintf("Signatures removed successfully\n");
+
+}
+
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
  *  can fail if those validity checks fail (among other reasons). */
@@ -2212,7 +2634,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // is enforced in ContextualCheckBlockHeader(); we wouldn't want to
     // re-enforce that rule here (at least until we make it impossible for
     // the clock to go backward).
-    if (!CheckBlock(block, state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
+
+    std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
+    RemoveSignatures(mutable_block);
+    if (!CheckBlock(*mutable_block, state, params.GetConsensus(), !fJustCheck, !fJustCheck)) {
         if (state.GetResult() == BlockValidationResult::BLOCK_MUTATED) {
             // We don't write down blocks to disk if they may have been
             // corrupted, so this should be impossible unless we're having hardware
@@ -4184,7 +4609,9 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     CBlockIndex *pindexDummy = nullptr;
     CBlockIndex *&pindex = ppindex ? *ppindex : pindexDummy;
 
-    bool accepted_header{AcceptBlockHeader(block, state, &pindex, min_pow_checked)};
+    std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(block);
+    RemoveSignatures(mutable_block);
+    bool accepted_header{AcceptBlockHeader(*mutable_block, state, &pindex, min_pow_checked)};
     CheckBlockIndex();
 
     if (!accepted_header)
@@ -4226,8 +4653,9 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
 
     const CChainParams& params{GetParams()};
 
-    if (!CheckBlock(block, state, params.GetConsensus()) ||
-        !ContextualCheckBlock(block, state, *this, pindex->pprev)) {
+
+    if (!CheckBlock(*mutable_block, state, params.GetConsensus()) ||
+        !ContextualCheckBlock(*mutable_block, state, *this, pindex->pprev)) {
         if (state.IsInvalid() && state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
             m_blockman.m_dirty_blockindex.insert(pindex);
@@ -4285,7 +4713,16 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         // malleability that cause CheckBlock() to fail; see e.g. CVE-2012-2459 and
         // https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-February/016697.html.  Because CheckBlock() is
         // not very expensive, the anti-DoS benefits of caching failure (of a definitely-invalid block) are not substantial.
-        bool ret = CheckBlock(*block, state, GetConsensus());
+
+        if(!VerifySignatures(block, *this)) { // *this is the current m_blockman (ChainstateManager)
+            // return error("Error on VerifySignatures");
+            //  ---^ this is the right error format, but crashes on fist block (expected)
+            LogPrintf("Error on VerifySignatures\n");
+        }
+
+        std::shared_ptr<CBlock> mutable_block = std::make_shared<CBlock>(*block);
+        RemoveSignatures(mutable_block);
+        bool ret = CheckBlock(*mutable_block, state, GetConsensus());
         if (ret) {
             // Store to disk
             ret = AcceptBlock(block, state, &pindex, force_processing, nullptr, new_block, min_pow_checked);
