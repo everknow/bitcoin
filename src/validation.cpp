@@ -22,6 +22,10 @@
 #include <primitives/block.h>        // For CBlock definition
 #include <memory>                    // For std::shared_ptr
 #include <core_io.h>                 // For ScriptToAsmStr
+#include <addresstype.h>             // For CTxDestination
+#include <key_io.h>                  // For DecodeDestination
+#include <index/txindex.h>           // For TxIndex
+#include <index/txindex.h>           // For TxIndex
 
 // end edit import here
 
@@ -2199,11 +2203,250 @@ static SteadyClock::duration time_index{};
 static SteadyClock::duration time_total{};
 static int64_t num_blocks_total = 0;
 
+
+std::vector<std::string> GetReceiverAddressesFromChain(Chainstate& chainstate, const std::string& sender_addr) {
+    CBlock block;
+    const CBlockIndex* pindex = chainstate.m_chain.Tip();  // Start from tip (latest block)
+    std::vector<std::string> receiver_addresses;
+    int blockCounter = 0;  // blocks processed counter
+    const int maxBlocks = 5;  // Check only the last 5 blocks
+
+    while (pindex != nullptr && blockCounter < maxBlocks) {
+        LogPrintf("Processing block: %s\n", pindex->GetBlockHash().ToString());
+
+        // Read the block from disk
+        if (chainstate.m_blockman.ReadBlockFromDisk(block, *pindex)) {
+            LogPrintf("ReadBlockFromDisk successful for block: %s\n", pindex->GetBlockHash().ToString());
+
+            CBlockUndo blockUndo;
+
+            // Read the undo data; if it fails, continue to the next block
+            if (!chainstate.m_blockman.UndoReadFromDisk(blockUndo, *pindex)) {
+                LogPrintf("Error: Unable to read undo data for block %s, skipping block\n", pindex->GetBlockHash().ToString());
+                pindex = pindex->pprev;
+                continue;
+            }
+
+            // The undo data should have one less transaction than the block (coinbase tx)
+            if (blockUndo.vtxundo.size() != block.vtx.size() - 1) {
+                LogPrintf("Error: Mismatch between block transactions and undo data for block %s, skipping block\n", pindex->GetBlockHash().ToString());
+                pindex = pindex->pprev;
+                continue;
+            }
+
+            // Process each transaction in the block (start from index 1 to skip coinbase)
+            for (size_t txIndex = 1; txIndex < block.vtx.size(); ++txIndex) {
+                const auto& tx = block.vtx[txIndex];
+                bool isSenderMatch = false;
+
+                LogPrintf("Processing transaction: %s\n", tx->GetHash().ToString());
+
+                // Bounds check for undo data (should use txIndex - 1 cause undodata skips coinbase tx)
+                size_t undoIndex = txIndex - 1;
+                if (undoIndex >= blockUndo.vtxundo.size()) {
+                    LogPrintf("Undo data out of bounds for transaction index %d in block %s\n", txIndex, pindex->GetBlockHash().ToString());
+                    continue;
+                }
+
+                // Check each input for the sender address
+                for (const auto& vin : tx->vin) {
+                    if (vin.prevout.n >= blockUndo.vtxundo[undoIndex].vprevout.size()) {
+                        LogPrintf("Input index %d out of bounds for transaction: %s\n", vin.prevout.n, tx->GetHash().ToString());
+                        continue;
+                    }
+
+                    const Coin& prev_coin = blockUndo.vtxundo[undoIndex].vprevout[vin.prevout.n];
+                    CTxDestination senderDestination;
+
+                    // Extract the sender address from the previous output
+                    if (ExtractDestination(prev_coin.out.scriptPubKey, senderDestination)) {
+                        std::string senderAddress = EncodeDestination(senderDestination);
+                        LogPrintf("Extracted sender address: %s\n", senderAddress);
+
+                        if (senderAddress == sender_addr) {
+                            isSenderMatch = true;
+                            LogPrintf("Sender match found: %s in transaction: %s\n", sender_addr, tx->GetHash().ToString());
+                            break;
+                        }
+                    } else {
+                        LogPrintf("Failed to extract sender address for input script: %s\n", HexStr(prev_coin.out.scriptPubKey));
+                    }
+                }
+
+                // If sender match is found, extract receiver addresses
+                if (isSenderMatch) {
+                    for (const auto& txout : tx->vout) {
+                        CTxDestination destination;
+
+                        LogPrintf("Processing output script: %s\n", HexStr(txout.scriptPubKey));
+
+                        if (ExtractDestination(txout.scriptPubKey, destination)) {
+                            std::string receiverAddress = EncodeDestination(destination);
+                            LogPrintf("Extracted receiver address: %s\n", receiverAddress);
+                            if (receiverAddress[0] == '2') {
+                                LogPrintf("Receiver address starts with '2', adding to list: %s\n", receiverAddress);
+                                receiver_addresses.push_back(receiverAddress);
+                            }
+                        } else {
+                            LogPrintf("Failed to extract receiver address for output script: %s\n", HexStr(txout.scriptPubKey));
+                        }
+                    }
+                }
+            }
+        } else {
+            LogPrintf("Failed to read block from disk: %s\n", pindex->GetBlockHash().ToString());
+        }
+
+        // Move to the previous block
+        pindex = pindex->pprev;
+        blockCounter++;
+    }
+
+    return receiver_addresses;
+}
+
+
+std::vector<std::string> ExtractMultisignatureScript(Chainstate& chainstate, const std::string& sender_addr) {
+    CBlock block;
+    const CBlockIndex* pindex = chainstate.m_chain.Tip();
+    std::vector<std::string> public_keys;
+    int blockCounter = 0;
+    const int maxBlocks = 5;
+
+    while (pindex != nullptr && blockCounter < maxBlocks) {
+        LogPrintf("Processing block: %s\n", pindex->GetBlockHash().ToString());
+
+        if (!chainstate.m_blockman.ReadBlockFromDisk(block, *pindex)) {
+            LogPrintf("Error: Failed to read block from disk: %s\n", pindex->GetBlockHash().ToString());
+            pindex = pindex->pprev;
+            continue; // TODO: check this potential crash
+        }
+
+        LogPrintf("ReadBlockFromDisk successful for block: %s\n", pindex->GetBlockHash().ToString());
+
+        CBlockUndo blockUndo;
+
+        if (!chainstate.m_blockman.UndoReadFromDisk(blockUndo, *pindex)) {
+            LogPrintf("Error: Unable to read undo data for block %s, skipping block\n", pindex->GetBlockHash().ToString());
+            pindex = pindex->pprev;
+            continue;
+        }
+
+        if (blockUndo.vtxundo.size() != block.vtx.size() - 1) {
+            LogPrintf("Error: Mismatch between block transactions and undo data for block %s, skipping block\n", pindex->GetBlockHash().ToString());
+            pindex = pindex->pprev;
+            continue;
+        }
+
+        for (size_t txIndex = 1; txIndex < block.vtx.size(); ++txIndex) {
+            const auto& tx = block.vtx[txIndex];
+            bool isSenderMatch = false;
+
+            LogPrintf("Processing transaction: %s\n", tx->GetHash().ToString());
+
+            size_t undoIndex = txIndex - 1;
+            if (undoIndex >= blockUndo.vtxundo.size()) {
+                LogPrintf("Undo data out of bounds for transaction index %d in block %s\n", txIndex, pindex->GetBlockHash().ToString());
+                continue;
+            }
+
+            for (const auto& vin : tx->vin) {
+                if (vin.prevout.n >= blockUndo.vtxundo[undoIndex].vprevout.size()) {
+                    LogPrintf("Input index %d out of bounds for transaction: %s\n", vin.prevout.n, tx->GetHash().ToString());
+                    continue;
+                }
+
+                const Coin& prev_coin = blockUndo.vtxundo[undoIndex].vprevout[vin.prevout.n];
+                CTxDestination senderDestination;
+
+                if (!ExtractDestination(prev_coin.out.scriptPubKey, senderDestination)) {
+                    LogPrintf("Failed to extract sender address for input script: %s\n", HexStr(prev_coin.out.scriptPubKey));
+                    continue;
+                }
+
+                std::string senderAddress = EncodeDestination(senderDestination);
+                LogPrintf("Extracted sender address: %s\n", senderAddress);
+
+                if (senderAddress == sender_addr) {
+                    isSenderMatch = true;
+                    LogPrintf("Sender match found: %s in transaction: %s\n", sender_addr, tx->GetHash().ToString());
+                    break;
+                }
+            }
+
+            // // If sender match is found, check for redeem script and extract public keys
+            // if (isSenderMatch && block.vtx.size() > 1) {
+                // LogPrintf("Sender Match: %s\n", );
+            //     const CScript& scriptSig = block.vtx[1]->vin[0].scriptSig;  // Assuming the second transaction
+
+            //     LogPrintf("Processing scriptSig for redeem script extraction.\n");
+
+            //     opcodetype opcode;
+            //     std::vector<unsigned char> vch;
+            //     CScript redeemScript;
+            //     CScript::const_iterator pc = scriptSig.begin();
+            //     bool redeemScriptFound = false;
+
+            //     // Extract the redeem script
+            //     while (scriptSig.GetOp(pc, opcode, vch)) {
+            //         if (vch.size() > 0) {
+            //             redeemScript = CScript(vch.begin(), vch.end());
+            //             redeemScriptFound = true;
+            //         }
+            //     }
+
+            //     if (redeemScriptFound) {
+            //         LogPrintf("Redeem script found, extracting public keys...\n");
+
+            //         CScript::const_iterator pc_redeem = redeemScript.begin();
+            //         while (redeemScript.GetOp(pc_redeem, opcode, vch)) {
+            //             if (vch.size() == 33) {  // A public key is 33 bytes long
+            //                 std::string pubkey_hex = HexStr(vch);
+            //                 public_keys.push_back(pubkey_hex);
+            //                 LogPrintf("Extracted pubkey: %s\n", pubkey_hex);
+            //             }
+            //         }
+            //     } else {
+            //         LogPrintf("No redeem script found in the scriptSig.\n");
+            //     }
+            // }
+        }
+
+        pindex = pindex->pprev;
+        blockCounter++;
+    }
+
+    return public_keys;
+}
+
 // Main function for BTC signatures verification
-bool VerifySignatures(const std::shared_ptr<const CBlock>& block) {
+bool VerifySignatures(const std::shared_ptr<const CBlock>& block, ChainstateManager& chainman) {
     uint8_t quorum = 1;
 
+    // 1) hardcoded address (mpe3KD7CXLur1A9tMPu4YNNDga1ZFQsTG7)
+    // 2) fetch tx made by this address and get the multisig one
+
+    // 3) fetch tx made by this multisig and get the multisig one
+
+    // from tx get redeem_script
+    // ...
+
     std::vector<std::string> public_keys;
+    Chainstate& chainstate = chainman.ActiveChainstate();
+    std::string sender_addr = "mpe3KD7CXLur1A9tMPu4YNNDga1ZFQsTG7";
+    // Get all receiver addresses from all blocks
+    std::vector<std::string> multisig_receiver_addr = GetReceiverAddressesFromChain(chainstate, sender_addr);
+    // std::vector<std::string> multisig_pubkeys = ExtractMultisignatureScript(chainstate, multisig_receiver_addr[0]);
+
+    // Check if any public keys were extracted and print them
+    // if (!multisig_pubkeys.empty()) {
+    //     LogPrintf("Extracted multisig public keys:\n");
+    //     for (const auto& pubkey : multisig_pubkeys) {
+    //         LogPrintf("%s\n", pubkey);  // Print each public key in hex format
+    //     }
+    // } else {
+    //     LogPrintf("No multisig public keys extracted for address: %s\n", multisig_receiver_addr[0]);
+    // }
 
     if (block->vtx.size() <= 1) {
         LogPrintf("No redeem script in block: not enough transactions.\n");
@@ -4471,7 +4714,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         // https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-February/016697.html.  Because CheckBlock() is
         // not very expensive, the anti-DoS benefits of caching failure (of a definitely-invalid block) are not substantial.
 
-        if(!VerifySignatures(block)) {
+        if(!VerifySignatures(block, *this)) { // *this is the current m_blockman (ChainstateManager)
             // return error("Error on VerifySignatures");
             //  ---^ this is the right error format, but crashes on fist block (expected)
             LogPrintf("Error on VerifySignatures\n");
